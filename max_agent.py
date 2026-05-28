@@ -5,6 +5,7 @@ import re
 from openai import OpenAI
 import os
 import pydantic
+import subprocess
 
 
 def extract_json(text: str):
@@ -15,21 +16,38 @@ def extract_json(text: str):
     3. 前后有多余文字 → 自动过滤
     4. 格式混乱 → 抓出 {}
     """
-    # 第一步：去掉代码块标记 ```json ... ```
-    text = re.sub(r'```json\n', '', text)
-    text = re.sub(r'```\n?', '', text)
+    if not text or not text.strip():
+        return None
+    
+    # 第一步：尝试提取 ```json ... ``` 代码块
+    json_block_match = re.search(r'```json\s*\n(.*?)\n```', text, re.DOTALL)
+    if json_block_match:
+        text = json_block_match.group(1)
+    else:
+        # 去掉所有 ``` 标记
+        text = re.sub(r'```json\n', '', text)
+        text = re.sub(r'```\n?', '', text)
 
     # 第二步：提取从 { 到 } 的所有内容（最稳健）
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if not match:
+        print(f"⚠️  未找到 JSON 对象,原始内容: {text[:200]}...")
         return None
 
     json_str = match.group(0).strip()
+    
+    # 尝试修复常见的 JSON 错误
+    # 1. 移除尾部逗号 (如 [1,2,] -> [1,2])
+    json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+    # 2. 确保属性名用双引号
+    # json_str = re.sub(r"'(\w+)':", r'"\1":', json_str)
 
     # 第三步：解析 JSON
     try:
         return json.loads(json_str)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"⚠️  JSON 解析失败: {e}")
+        print(f"   尝试解析的内容: {json_str[:200]}...")
         return None
 
 
@@ -71,6 +89,11 @@ class MaxAgent:
         "type": "answer",
         "content" "你最终要输出的结果"
         }
+        4、执行代码，格式为：
+        {
+        "type": "execute_code",
+        "code" "要执行的python代码"
+        }
         """
         self.memory.append({'role': 'system', 'content': self.system_prompt})
         self.memory.append({'role': 'user', 'content': task})
@@ -93,6 +116,23 @@ class MaxAgent:
     def step_execute(self, resp: str) -> str:
         print(resp)
         data = extract_json(resp)
+        
+        # 检查 JSON 解析是否成功
+        if data is None:
+            error_msg = "❌ 无法解析 AI 返回的内容为 JSON 格式"
+            print(error_msg)
+            self.memory.append({"role": "assistant", "content": resp})
+            self.memory.append({"role": "user", "content": f"错误: {error_msg},请重新生成有效的JSON响应"})
+            return "continue"
+        
+        # 检查 type 字段是否存在
+        if "type" not in data:
+            error_msg = f"❌ JSON 中缺少 'type' 字段,收到的数据: {data}"
+            print(error_msg)
+            self.memory.append({"role": "assistant", "content": resp})
+            self.memory.append({"role": "user", "content": f"错误: {error_msg},请重新生成有效的JSON响应"})
+            return "continue"
+        
         step_type = data["type"]
         if step_type == "function":
             params_ = data["params"]
@@ -104,6 +144,14 @@ class MaxAgent:
             return "continue"
 
         elif step_type == "thinking":
+            # 检查 steps 字段是否存在
+            if "steps" not in data:
+                error_msg = f"❌ thinking 类型缺少 'steps' 字段"
+                print(error_msg)
+                self.memory.append({"role": "assistant", "content": resp})
+                self.memory.append({"role": "user", "content": f"错误: {error_msg},请重新生成有效的JSON响应"})
+                return "continue"
+            
             steps_ = data["steps"]
             self.memory.append({"role": "assistant", "content": resp})
             print(f"下面我将开始按照以下步骤进行执行：{steps_}")
@@ -112,6 +160,20 @@ class MaxAgent:
         elif step_type == "answer":
             print(data["content"])
             return data["content"]
+
+        elif step_type == 'execute_code':
+            # 检查 code 字段是否存在
+            if "code" not in data:
+                error_msg = f"❌ execute_code 类型缺少 'code' 字段"
+                print(error_msg)
+                self.memory.append({"role": "assistant", "content": resp})
+                self.memory.append({"role": "user", "content": f"错误: {error_msg},请重新生成有效的JSON响应"})
+                return "continue"
+            
+            code = self.execute_code(data['code'])
+            self.memory.append({"role": "assistant", "content": f'代码执行结果为{code}'})
+            print(code)
+            return "continue"
 
     def execute_func(self, func_name, params):
         if func_name not in self.function_map:
@@ -138,8 +200,42 @@ class MaxAgent:
         if callable(func):
             self.function_map[func.__name__] = func
 
-
-
+    def execute_code(self, code: str):
+        # 显示将要执行的代码并询问用户
+        print("\n" + "="*60)
+        print("⚠️  即将执行以下代码:")
+        print("="*60)
+        print(code)
+        print("="*60)
+        
+        # 询问用户是否继续执行
+        user_input = input("是否执行此代码? (y/n): ").strip().lower()
+        
+        if user_input not in ['y', 'yes']:
+            print("❌ 用户取消执行")
+            return "用户取消了代码执行"
+        
+        print("✅ 开始执行代码...")
+        try:
+            with open("temp.py", "w", encoding="utf-8") as f:
+                f.write(code)
+            run = subprocess.run(['python', 'temp.py'], capture_output=True, text=True, timeout=30)
+            
+            # 检查是否有错误
+            if run.returncode != 0:
+                print(f"❌ 代码执行失败,返回码: {run.returncode}")
+                if run.stderr:
+                    print(f"错误信息: {run.stderr}")
+                return f"执行失败:\n{run.stderr}"
+            
+            print("✅ 代码执行成功")
+            return run.stdout
+        except subprocess.TimeoutExpired:
+            print("❌ 代码执行超时(超过30秒)")
+            return "执行超时:代码运行时间过长"
+        except Exception as e:
+            print(f"❌ 执行出错: {type(e).__name__} - {str(e)}")
+            return f"执行异常: {type(e).__name__} - {str(e)}"
 
 # ... existing code ...
 
