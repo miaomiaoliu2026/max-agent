@@ -43,7 +43,7 @@ def extract_json(text: str):
     # 1. 移除尾部逗号 (如 [1,2,] -> [1,2])
     json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
     # 2. 确保属性名用双引号
-    # json_str = re.sub(r"'(\w+)':", r'"\1":', json_str)
+    json_str = re.sub(r"'(\w+)':", r'"\1":', json_str)
 
     # 第三步：解析 JSON
     try:
@@ -61,6 +61,7 @@ class MaxAgent:
         self.max_steps: int = 10
         self.system_prompt: str = ''
         self.function_map = {}
+        self.question_map = {}
 
     def get_func_desc(self):
         result = []
@@ -69,6 +70,7 @@ class MaxAgent:
         return str(result)
 
     def run(self, task: str):
+        logger.info(f"用户提了一个问题：{task}")
         self.system_prompt = f"""
         你是一个乐于助人的AI智能助手，在你遇见复杂的问题时，你会先将这个问题进行拆分，拆分成几个最小可执行单元，
         然后依次执行, 你有{self.get_func_desc()}这些方法可以进行调用。
@@ -104,7 +106,7 @@ class MaxAgent:
         step = 0
         while True:
             step += 1
-            step_exe_result = self.step_execute(resp)
+            step_exe_result = self.step_execute(task, resp)
             if step_exe_result == 'continue':
                 if step > self.max_steps:
                     result = '当前超过模型最大执行次数，未得出结果，请重试。'
@@ -115,7 +117,31 @@ class MaxAgent:
                 break
         return result
 
-    def step_execute(self, resp: str) -> str:
+    def supervisor(self, msgs: list[dict]):
+        """
+        对当前的结果进行决策
+        :param msgs:
+        :return:
+        """
+        supervisor_prompt = {
+            "passed": "True/False",
+            "reason": "返回不合理的原因。passed为True时不需要返回",
+            "action": "continue/retry/abort"
+        }
+        msgs.append({
+            'role': "system",
+            'content': f'''判断当前节点的处理结果是否正确。
+        你必须返回标准 JSON 格式（属性名和字符串值都用双引号）：
+        {json.dumps(supervisor_prompt, ensure_ascii=False, indent=2)}
+        '''
+        })
+        checked_result = self.call_llm(msgs)
+        data = extract_json(checked_result)
+        if data is None:
+            return {"passed": "False", "reason": "检查失败", "action": "retry"}
+        return data
+
+    def step_execute(self, ori_task: str, resp: str) -> str:
         data = extract_json(resp)
 
         # 检查 JSON 解析是否成功
@@ -139,10 +165,32 @@ class MaxAgent:
             params_ = data["params"]
             logger.info(f"下面我将调用{data['function_name']}方法，来获取{params_}的相关信息")
             function_result = self.execute_func(data["function_name"], params_)
-            self.memory.append({"role": "assistant", "content": resp})
-            self.memory.append({"role": "user", "content": f"函数调用结果为：{function_result}"})
-            logger.info(f"调用方法的结果是：{function_result}")
-            return "continue"
+
+            supervisor_params = [
+                {"role": "user", "content": f'原始问题为：{ori_task}'},
+                {"role": "system", "content": f"当前这一轮的任务是：{resp}"},
+                {"role": "system", "content": f"当前这一论的结果是： {function_result}"}
+            ]
+            supervisor_result = self.supervisor(supervisor_params)
+            if supervisor_result['passed'] != 'True':
+                reason = supervisor_result['reason']
+                action = supervisor_result['action']
+                logger.info(f"supervisor判断当前结果不合理，原因为：{reason}")
+                if action == 'continue':
+                    self.memory.append({"role": "assistant", "content": resp})
+                    self.memory.append({"role": "user", "content": f"函数调用结果为：{function_result}"})
+                    return "continue"
+                elif action == 'retry':
+                    self.memory.append({"role": "assistant", "content": resp})
+                    self.memory.append({"role": "user", "content": f"{reason }"})
+                else:
+                    return "abort"
+
+            else:
+                self.memory.append({"role": "assistant", "content": resp})
+                self.memory.append({"role": "user", "content": f"函数调用结果为：{function_result}"})
+                logger.info(f"调用方法的结果是：{function_result}")
+                return "continue"
 
         elif step_type == "thinking":
             # 检查 steps 字段是否存在
@@ -169,8 +217,29 @@ class MaxAgent:
                 self.memory.append({"role": "assistant", "content": resp})
                 self.memory.append({"role": "user", "content": f"错误: {error_msg},请重新生成有效的JSON响应"})
                 return "continue"
-
+            logger.info("下面我将通过执行一段代码，来获取结果")
             code = self.execute_code(data['code'])
+
+            supervisor_params = [
+                {"role": "user", "content": f'原始问题为：{ori_task}'},
+                {"role": "system", "content": f"当前这一轮的任务是：{resp}"},
+                {"role": "system", "content": f"当前这一论的结果是： {code}"}
+            ]
+            supervisor_result = self.supervisor(supervisor_params)
+            if supervisor_result['passed'] != 'True':
+                reason = supervisor_result['reason']
+                action = supervisor_result['action']
+                logger.info(f"supervisor判断当前结果不合理，原因为：{reason}")
+                if action == 'continue':
+                    self.memory.append({"role": "assistant", "content": resp})
+                    self.memory.append({"role": "user", "content": f"函数调用结果为：{code}"})
+                    return "continue"
+                elif action == 'retry':
+                    self.memory.append({"role": "assistant", "content": resp})
+                    self.memory.append({"role": "user", "content": f"{reason}"})
+                else:
+                    return "abort"
+
             self.memory.append({"role": "assistant", "content": f'代码执行结果为{code}'})
             return "continue"
 
