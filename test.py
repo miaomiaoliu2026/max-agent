@@ -1,4 +1,7 @@
 from max_agent import MaxAgent, get_weather
+from log_config import init_logger
+
+init_logger()
 
 agent = MaxAgent()
 agent.register_function(get_weather)
