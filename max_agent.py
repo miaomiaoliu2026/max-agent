@@ -107,7 +107,7 @@ class MaxAgent:
         while True:
             step += 1
             step_exe_result = self.step_execute(task, resp)
-            if step_exe_result == 'continue':
+            if step_exe_result == 'continue' or step_exe_result == 'retry':
                 if step > self.max_steps:
                     result = '当前超过模型最大执行次数，未得出结果，请重试。'
                     break
@@ -126,7 +126,7 @@ class MaxAgent:
         supervisor_prompt = {
             "passed": "True/False",
             "reason": "返回不合理的原因。passed为True时不需要返回",
-            "action": "continue/retry/abort"
+            "action": "continue/retry"
         }
         msgs.append({
             'role': "system",
@@ -137,6 +137,7 @@ class MaxAgent:
         })
         checked_result = self.call_llm(msgs)
         data = extract_json(checked_result)
+        logger.debug("supervisor输出结果为：" + str(data))
         if data is None:
             return {"passed": "False", "reason": "检查失败", "action": "retry"}
         return data
@@ -182,7 +183,8 @@ class MaxAgent:
                     return "continue"
                 elif action == 'retry':
                     self.memory.append({"role": "assistant", "content": resp})
-                    self.memory.append({"role": "user", "content": f"{reason }"})
+                    self.memory.append({"role": "user", "content": f"{reason},需要重新尝试"})
+                    return "retry"
                 else:
                     return "abort"
 
@@ -236,7 +238,8 @@ class MaxAgent:
                     return "continue"
                 elif action == 'retry':
                     self.memory.append({"role": "assistant", "content": resp})
-                    self.memory.append({"role": "user", "content": f"{reason}"})
+                    self.memory.append({"role": "user", "content": f"{reason}需要重新尝试"})
+                    return "retry"
                 else:
                     return "abort"
 
@@ -249,7 +252,11 @@ class MaxAgent:
 
         func = self.function_map[func_name]
         try:
-            result = func(params)
+            # 如果 params 是字典,使用 ** 展开;否则直接传入
+            if isinstance(params, dict):
+                result = func(**params)
+            else:
+                result = func(params)
         except Exception as e:
             logger.error(f'函数调用出错: {type(e).__name__} = {str(e)}')
             result = f"调用出错：{type(e).__name__} - {str(e)}"
