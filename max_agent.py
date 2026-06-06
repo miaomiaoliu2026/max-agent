@@ -44,6 +44,18 @@ def extract_json(text: str):
     json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
     # 2. 确保属性名用双引号
     json_str = re.sub(r"'(\w+)':", r'"\1":', json_str)
+    # 3. 处理字符串值中的控制字符（换行符、制表符等）
+    # 将未转义的控制字符替换为转义形式
+    def escape_control_chars(match):
+        s = match.group(0)
+        # 替换常见的控制字符
+        s = s.replace('\n', '\\n')
+        s = s.replace('\r', '\\r')
+        s = s.replace('\t', '\\t')
+        return s
+    
+    # 匹配双引号内的字符串内容并转义控制字符
+    json_str = re.sub(r'"([^"\\]*(?:\\.[^"\\]*)*)"', escape_control_chars, json_str)
 
     # 第三步：解析 JSON
     try:
