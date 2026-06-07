@@ -90,5 +90,5 @@ class RAGTool:
         Returns:
             最相关的三个数据
         """
-        result = self.collection.query(query_texts=[sentence], n_results=1)
+        result = self.collection.query(query_texts=[sentence], n_results=3)
         return result

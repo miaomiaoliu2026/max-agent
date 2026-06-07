@@ -8,7 +8,6 @@ while True:
     user_input = input("你: ").strip()
 
     if user_input.lower() == 'bye':
-        print("\n正在保存对话记忆...")
         resp = agent.chat(user_input)
         print(f"AI: {resp}")
         break
