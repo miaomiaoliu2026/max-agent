@@ -45,7 +45,7 @@ class CompanionAgent:
 
     def save_important_info_to_memory(self):
         import json
-            
+
         self.remember_items.append({"role": "system",
                                     "content": "你是一个记忆提取助手。请仔细阅读以下对话内容,提取并总结其中值得记忆的重要信息。要求："
                                                "1. 只输出总结的要点,不要输出对话原文"
@@ -57,14 +57,14 @@ class CompanionAgent:
         non_system_messages = [msg for msg in self.curr_memory if msg.get('role') != 'system']
         self.remember_items.append({"role": "user", "content": f"需要提取的对话内容:{non_system_messages}"})
         remember_info = self.call_llm(self.remember_items)
-            
+
         # 解析JSON格式的列表
         try:
             # 兼容单引号格式
             import re
             remember_info_fixed = re.sub(r"'(.*?)'", r'"\1"', remember_info)
             remember_list = json.loads(remember_info_fixed)
-                
+
             if isinstance(remember_list, list) and len(remember_list) > 0:
                 print(f'这些我记住了: {remember_list}')
                 # 逐个添加原子性记忆项
