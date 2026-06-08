@@ -1,5 +1,10 @@
 import os
+import subprocess
+
 from langchain_core.tools import tool
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -67,3 +72,46 @@ def get_weather(location: str) -> str:
         return f"错误：请求失败 - {str(e)}"
     except KeyError as e:
         return f"错误：解析天气数据失败 - {str(e)}"
+
+
+@tool
+def execute_code(code: str):
+    """
+    用于执行大模型输出的python代码
+    :param code: 完整的python代码
+    :return: 代码输出的结果
+    """
+    logger.info("\n" + "=" * 60)
+    logger.info("⚠️  即将执行以下代码:")
+    logger.info("=" * 60)
+    logger.info(code)
+    logger.info("=" * 60)
+
+    # 询问用户是否继续执行
+    # user_input = input("是否执行此代码? (y/n): ").strip().lower()
+
+    # if user_input not in ['y', 'yes']:
+    #     logger.info("❌ 用户取消执行")
+    #     return "用户取消了代码执行"
+
+    logger.info("✅ 开始执行代码...")
+    try:
+        with open("temp.py", "w", encoding="utf-8") as f:
+            f.write(code)
+        run = subprocess.run(['python', 'temp.py'], capture_output=True, text=True, timeout=30, encoding='utf-8')
+
+        # 检查是否有错误
+        if run.returncode != 0:
+            logger.info(f"❌ 代码执行失败,返回码: {run.returncode}")
+            if run.stderr:
+                logger.info(f"错误信息: {run.stderr}")
+            return f"执行失败:\n{run.stderr}"
+
+        logger.info("✅ 代码执行成功")
+        return run.stdout
+    except subprocess.TimeoutExpired:
+        logger.error("❌ 代码执行超时(超过30秒)")
+        return "执行超时:代码运行时间过长"
+    except Exception as e:
+        logger.error(f"❌ 执行出错: {type(e).__name__} - {str(e)}")
+        return f"执行异常: {type(e).__name__} - {str(e)}"
